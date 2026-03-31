@@ -6,6 +6,8 @@
     <title>Real-time Business Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- 데이터 라벨 표시를 위한 플러그인 추가 -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
@@ -21,7 +23,7 @@
         <header class="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
             <div>
                 <h1 class="text-3xl font-bold text-slate-800">실시간 경영 지표 대시보드</h1>
-                <p class="text-slate-500">구글 스프레드시트 연동 (안정화 버전)</p>
+                <p class="text-slate-500">구글 스프레드시트 연동 실시간 분석</p>
             </div>
             <div class="flex items-center gap-3 bg-white px-4 py-2 rounded-full shadow-sm border border-slate-200">
                 <div id="status-dot" class="w-3 h-3 bg-green-500 rounded-full"></div>
@@ -64,7 +66,7 @@
         <!-- Charts -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div class="glass-card p-6 rounded-2xl shadow-sm">
-                <h2 class="text-lg font-bold text-slate-800 mb-6">매출 및 영업이익 추이</h2>
+                <h2 class="text-lg font-bold text-slate-800 mb-6">매출 · 원가 · 이익 추이</h2>
                 <div class="chart-container"><canvas id="revenueProfitChart"></canvas></div>
             </div>
             <div class="glass-card p-6 rounded-2xl shadow-sm">
@@ -76,13 +78,16 @@
                 <div class="chart-container"><canvas id="productivityChart"></canvas></div>
             </div>
             <div class="glass-card p-6 rounded-2xl shadow-sm">
-                <h2 class="text-lg font-bold text-slate-800 mb-6">자산 및 부채 현황</h2>
+                <h2 class="text-lg font-bold text-slate-800 mb-6">재무 상태</h2>
                 <div class="chart-container"><canvas id="financialChart"></canvas></div>
             </div>
         </div>
     </div>
 
     <script>
+        // ChartDataLabels 플러그인 등록
+        Chart.register(ChartDataLabels);
+
         const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRe5lbgi2-_26E4xtx6kAjJEMuwLrhOFEmG_GrAI9wggIwAno4vtwgDOBQfF8LH_z5DKlYyoaNxz3CO/pub?output=csv';
         let charts = {};
         let isFetching = false;
@@ -91,7 +96,9 @@
 
         function formatNumber(num) {
             if (isNaN(num) || num === null) return "0";
-            return new Intl.NumberFormat('ko-KR').format(Math.floor(num));
+            const absNum = Math.abs(Math.floor(num));
+            const formatted = new Intl.NumberFormat('ko-KR').format(absNum);
+            return num < 0 ? `-${formatted}` : formatted;
         }
 
         function parseCleanFloat(str) {
@@ -102,9 +109,8 @@
         }
 
         async function fetchData() {
-            if (isFetching) return; // 이전 요청이 진행 중이면 중복 실행 방지
+            if (isFetching) return;
             isFetching = true;
-            
             document.getElementById('status-dot').classList.add('animate-pulse');
 
             Papa.parse(CSV_URL, {
@@ -119,7 +125,7 @@
                 error: function(err) {
                     console.error("Fetch Error:", err);
                     isFetching = false;
-                    document.getElementById('last-update').innerText = "연결 지연/오류";
+                    document.getElementById('last-update').innerText = "연결 오류";
                 }
             });
         }
@@ -127,10 +133,10 @@
         function processData(rawData) {
             if (!rawData || rawData.length === 0) return;
 
-            // 데이터 정제 (중복 방지를 위해 매번 새 배열 생성)
             const data = rawData.map(row => ({
                 매출: parseCleanFloat(row.매출),
                 영업이익: parseCleanFloat(row.영업이익),
+                제조원가: parseCleanFloat(row.제조원가),
                 판매량: parseCleanFloat(row.판매량),
                 재고: parseCleanFloat(row.재고),
                 생산량: parseCleanFloat(row.생산량),
@@ -138,51 +144,84 @@
                 생산직원생산성: parseCleanFloat(row.생산직원생산성),
                 자산: parseCleanFloat(row.자산),
                 부채: parseCleanFloat(row.부채),
+                기말현금: parseCleanFloat(row.기말현금),
                 신용등급: row.신용등급 ? row.신용등급.trim() : '-'
             }));
 
             const latest = data[data.length - 1];
-
-            // KPI 업데이트
             document.getElementById('kpi-revenue').innerText = formatNumber(latest.매출);
             document.getElementById('kpi-profit').innerText = formatNumber(latest.영업이익);
             document.getElementById('kpi-inventory').innerText = formatNumber(latest.재고);
             document.getElementById('kpi-credit').innerText = latest.신용등급;
-            
             document.getElementById('last-update').innerText = `최근 갱신: ${new Date().toLocaleTimeString()}`;
 
             const labels = data.map((_, i) => `${i + 1}회차`);
 
-            // 차트 업데이트 (데이터를 통째로 교체)
+            // 1. 매출 · 원가 · 이익 추이
             updateChart('revenueProfitChart', 'line', labels, [
-                { label: '매출', data: data.map(d => d.매출), borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', fill: true },
-                { label: '영업이익', data: data.map(d => d.영업이익), borderColor: '#10b981', backgroundColor: 'transparent' }
+                { label: '매출', data: data.map(d => d.매출), borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', fill: true, tension: 0.3 },
+                { label: '제조원가', data: data.map(d => d.제조원가), borderColor: '#94a3b8', borderDash: [5, 5], backgroundColor: 'transparent', tension: 0.3 },
+                { label: '영업이익', data: data.map(d => d.영업이익), borderColor: '#10b981', backgroundColor: 'transparent', tension: 0.3 }
             ]);
 
+            // 2. 판매/생산/재고 비교
             updateChart('volumeChart', 'bar', labels, [
                 { label: '판매량', data: data.map(d => d.판매량), backgroundColor: '#6366f1' },
                 { label: '생산량', data: data.map(d => d.생산량), backgroundColor: '#a855f7' },
                 { label: '재고', data: data.map(d => d.재고), backgroundColor: '#f43f5e' }
             ]);
 
+            // 3. 직원 생산성 분석
             updateChart('productivityChart', 'line', labels, [
                 { label: '영업 생산성', data: data.map(d => d.영업직원생산성), borderColor: '#f59e0b' },
                 { label: '생산 생산성', data: data.map(d => d.생산직원생산성), borderColor: '#8b5cf6' }
             ]);
 
+            // 4. 재무 상태 (총자산을 텍스트로 표시)
+            const totalAssets = data.map(d => d.자산);
             updateChart('financialChart', 'bar', labels, [
-                { label: '자산', data: data.map(d => d.자산), backgroundColor: '#0ea5e9' },
-                { label: '부채', data: data.map(d => d.부채), backgroundColor: '#cbd5e1' }
+                { 
+                    label: '기말현금', 
+                    data: data.map(d => d.기말현금), 
+                    backgroundColor: '#fbbf24',
+                    borderRadius: 0,
+                    datalabels: { display: false } // 개별 스택에는 라벨 숨김
+                },
+                { 
+                    label: '기타자산', 
+                    data: data.map(d => Math.max(0, d.자산 - d.기말현금)), 
+                    backgroundColor: '#0ea5e9',
+                    borderRadius: 0,
+                    datalabels: {
+                        display: true,
+                        align: 'top',
+                        anchor: 'end',
+                        formatter: (value, context) => {
+                            const total = totalAssets[context.dataIndex];
+                            return (total / 100000000).toFixed(1) + '억';
+                        },
+                        color: '#1e293b',
+                        font: { weight: 'bold', size: 11 }
+                    }
+                },
+                { 
+                    label: '부채', 
+                    data: data.map(d => -Math.abs(d.부채)), 
+                    backgroundColor: '#f43f5e',
+                    borderRadius: 0,
+                    datalabels: { display: false }
+                }
             ], true);
         }
 
-        function updateChart(id, type, labels, datasets, stacked = false) {
+        function updateChart(id, type, labels, datasets, isStacked = false) {
             const ctx = document.getElementById(id).getContext('2d');
             
             if (charts[id]) {
-                // 기존 데이터 배열을 완전히 새 데이터로 교체하여 꼬임 방지
                 charts[id].data.labels = labels;
                 charts[id].data.datasets = datasets;
+                charts[id].options.scales.x.stacked = isStacked;
+                charts[id].options.scales.y.stacked = isStacked;
                 charts[id].update(); 
             } else {
                 charts[id] = new Chart(ctx, {
@@ -191,21 +230,43 @@
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
-                        animation: { duration: 400 }, // 부드러운 전환을 위해 짧은 애니메이션 적용
+                        animation: { duration: 400 },
+                        layout: {
+                            padding: { top: 20 } // 상단 텍스트 공간 확보
+                        },
                         plugins: {
                             legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } },
                             tooltip: {
                                 callbacks: {
-                                    label: (ctx) => `${ctx.dataset.label}: ${formatNumber(ctx.parsed.y)}`
+                                    label: (ctx) => {
+                                        const label = ctx.dataset.label || '';
+                                        let value = Math.abs(ctx.parsed.y);
+                                        return `${label}: ${formatNumber(value)}`;
+                                    }
                                 }
-                            }
+                            },
+                            // 기본 데이터 라벨 설정 (필요한 곳에서만 활성화)
+                            datalabels: { display: false }
                         },
                         scales: {
                             y: { 
-                                stacked: stacked,
-                                ticks: { callback: (v) => v >= 100000000 ? (v/100000000).toFixed(1) + '억' : v.toLocaleString() }
+                                stacked: isStacked,
+                                ticks: { 
+                                    callback: (v) => {
+                                        const absV = Math.abs(v);
+                                        const label = absV >= 100000000 ? (absV/100000000).toFixed(1) + '억' : absV.toLocaleString();
+                                        return v < 0 ? '-' + label : label;
+                                    }
+                                },
+                                grid: {
+                                    color: (context) => (context.tick.value === 0 ? '#475569' : '#f1f5f9'),
+                                    lineWidth: (context) => (context.tick.value === 0 ? 2 : 1)
+                                }
                             },
-                            x: { stacked: stacked, grid: { display: false } }
+                            x: { 
+                                stacked: isStacked,
+                                grid: { display: false } 
+                            }
                         }
                     }
                 });
@@ -213,7 +274,6 @@
         }
 
         fetchData();
-        // 10초마다 갱신
         setInterval(fetchData, 10000);
     </script>
 </body>
